@@ -1,0 +1,10 @@
+bin/
+obj/
+node_modules/
+web/dist/
+web/.angular/
+*.user
+.vs/
+scripts/.eval-demo.js
+web/public/docs/
+web/scripts/.eval-demo.js

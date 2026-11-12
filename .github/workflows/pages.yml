@@ -1,0 +1,35 @@
+name: deploy-demo
+# Publishes the Angular UI to GitHub Pages with the RAG engine running IN THE BROWSER (no server needed).
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: pages, cancel-in-progress: true }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+        working-directory: web
+      - name: Check the in-browser engine against the golden set
+        run: npm run eval:demo
+        working-directory: web
+      - name: Build (demo mode)
+        working-directory: web
+        run: |
+          node scripts/prepare-demo.js
+          npx ng build --base-href "/${{ github.event.repository.name }}/"
+          echo "window.API_URL = 'local';" > dist/web/browser/config.js
+          cp dist/web/browser/index.html dist/web/browser/404.html
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: web/dist/web/browser }
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.d.outputs.page_url }}" }
+    steps:
+      - id: d
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,10 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    { "name": "API (debug)", "type": "coreclr", "request": "launch", "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/PolicyPilot.Api/bin/Debug/net8.0/PolicyPilot.Api.dll",
+      "cwd": "${workspaceFolder}/src/PolicyPilot.Api", "env": { "ASPNETCORE_URLS": "http://localhost:5080" } },
+    { "name": "Tests + eval (debug)", "type": "coreclr", "request": "launch", "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/PolicyPilot.Eval/bin/Debug/net8.0/PolicyPilot.Eval.dll", "args": ["all"], "cwd": "${workspaceFolder}" }
+  ]
+}

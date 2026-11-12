@@ -1,0 +1,20 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet build -c Release
+      - name: Unit tests + RAG evaluation gate (fails if quality drops below targets)
+        run: dotnet run -c Release --project src/PolicyPilot.Eval -- all
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci && npm run eval:demo && node scripts/prepare-demo.js && npx ng build
+        working-directory: web

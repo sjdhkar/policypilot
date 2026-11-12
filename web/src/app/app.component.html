@@ -1,0 +1,110 @@
+<header>
+  <div class="brand"><span class="logo">PP</span><div><h1>PolicyPilot</h1><small>BFSI policy &amp; compliance assistant · fictional documents@if (api.local) { · <b>in-browser demo engine</b> (same pipeline, TypeScript port of the .NET backend)}</small></div></div>
+  @if (api.token()) {
+    <div class="who"><span class="pill">{{ api.user() }} · {{ api.role() }}</span><button class="ghost" (click)="api.logout()">Log out</button></div>
+  } @else {
+    <form class="login" (ngSubmit)="login()">
+      <input name="u" [(ngModel)]="username" placeholder="username" aria-label="username" />
+      <input name="p" [(ngModel)]="password" type="password" placeholder="password" aria-label="password" />
+      <button type="submit">Log in</button>
+      <span class="hint">Try:
+        <a (click)="pick('customer','customer123')">customer</a> ·
+        <a (click)="pick('officer','officer123')">officer</a> ·
+        <a (click)="pick('admin','admin123')">admin</a></span>
+    </form>
+  }
+</header>
+
+<nav>
+  <button [class.on]="tab() === 'chat'" (click)="go('chat')">Ask policies</button>
+  <button [class.on]="tab() === 'agent'" (click)="go('agent')">Agent (tools)</button>
+  <button [class.on]="tab() === 'docs'" (click)="go('docs')">Documents</button>
+  <button [class.on]="tab() === 'metrics'" (click)="go('metrics')">Metrics</button>
+</nav>
+
+@if (error()) { <div class="err" role="alert">{{ error() }}</div> }
+
+<main>
+@switch (tab()) {
+  @case ('chat') {
+    <div class="chat" #scroll>
+      @if (turns().length === 0) {
+        <div class="empty">
+          <p>Ask about loans, KYC, cards or grievances. Answers cite the source section. Not logged in = customer access.</p>
+          <div class="chips">@for (s of samples; track s) { <button class="chip" (click)="ask(s)">{{ s }}</button> }</div>
+        </div>
+      }
+      @for (t of turns(); track $index) {
+        <div class="turn" [class.user]="t.role === 'user'">
+          <div class="bubble">{{ t.content }}@if (t.streaming) {<span class="cursor">▍</span>}</div>
+          @if (t.meta) {
+            <div class="meta">
+              <span class="pill" [class.warn]="lowConf(t)" [class.bad]="!t.meta.answered">{{ t.meta.answered ? 'confidence ' + pct(t.meta.confidence) + '%' : 'no grounded answer' }}</span>
+              @for (f of t.meta.flags; track f) { <span class="pill flag">{{ f }}</span> }
+              @if (lowConf(t)) { <span class="note">Low confidence - verify with the source.</span> }
+            </div>
+            @if (t.meta.citations.length && t.meta.answered) {
+              <details><summary>{{ t.meta.citations.length }} sources</summary>
+                @for (c of t.meta.citations; track c.index) {
+                  <div class="cite"><b>[{{ c.index }}] {{ c.docTitle }}</b> &rsaquo; {{ c.section }}<p>{{ c.snippet }}</p></div>
+                }
+              </details>
+            }
+            <details class="timings"><summary>pipeline timings</summary>
+              @for (x of t.meta.timings; track x.stage) { <span>{{ x.stage }}: {{ x.ms }} ms</span> }
+            </details>
+          }
+        </div>
+      }
+    </div>
+    <form class="ask" (ngSubmit)="ask()">
+      <input name="q" [(ngModel)]="question" placeholder="Ask a policy question..." maxlength="1000" [disabled]="busy()" aria-label="question" />
+      <button type="submit" [disabled]="busy() || !question.trim()">Send</button>
+    </form>
+  }
+  @case ('agent') {
+    <p class="lead">The agent decides which tool to call (policy search, EMI calculator, loan eligibility), runs it, and shows every step.</p>
+    <form class="ask" (ngSubmit)="runAgent()">
+      <input name="a" [(ngModel)]="agentQ" aria-label="agent question" />
+      <button type="submit" [disabled]="busy()">Run</button>
+    </form>
+    <div class="chips">
+      <button class="chip" (click)="agentQ='Check eligibility income 100000 existing emi 10000 amount 5000000 tenure 240 score 780'">Eligibility example</button>
+      <button class="chip" (click)="agentQ='What is the prepayment charge on floating rate loans?'">Policy example</button>
+    </div>
+    @if (agentRes(); as r) {
+      <div class="card"><h3>Answer</h3><p>{{ r.answer }}</p></div>
+      <div class="card"><h3>Tool trace</h3>
+        @for (s of r.steps; track $index) {
+          <div class="step" [class.bad]="s.error"><b>{{ s.tool }}</b> <code>{{ s.args }}</code><p>{{ s.result }}</p></div>
+        } @empty { <p>No tool was called.</p> }
+      </div>
+    }
+  }
+  @case ('docs') {
+    <p class="lead">Documents visible to your role. Admins can upload .md / .txt / .docx and choose which roles may retrieve them.</p>
+    @if (api.role() === 'admin') {
+      <div class="card row"><label>Allowed roles <input [(ngModel)]="uploadRoles" /></label>
+        <input type="file" accept=".md,.txt,.docx" (change)="upload($event)" aria-label="upload document" /></div>
+    }
+    <table><thead><tr><th>Title</th><th>Category</th><th>Roles</th><th></th></tr></thead><tbody>
+      @for (d of docs(); track d.id) {
+        <tr><td>{{ d.title }}</td><td>{{ d.category }}</td><td>{{ d.allowedRoles.join(', ') }}</td>
+          <td>@if (api.role() === 'admin') {<button class="ghost" (click)="remove(d.id)">Delete</button>}</td></tr>
+      }
+    </tbody></table>
+  }
+  @case ('metrics') {
+    @if (metrics(); as m) {
+      <div class="grid">
+        <div class="card"><h3>Requests</h3><strong class="big">{{ m.requests }}</strong></div>
+        <div class="card"><h3>Answered / Refused</h3><strong class="big">{{ m.answered }} / {{ m.noAnswer }}</strong></div>
+        <div class="card"><h3>Latency p50 / p95</h3><strong class="big">{{ m.p50Ms }} / {{ m.p95Ms }} ms</strong></div>
+        <div class="card"><h3>Tokens in / out</h3><strong class="big">{{ m.promptTokens }} / {{ m.completionTokens }}</strong></div>
+        <div class="card"><h3>Guardrail trips</h3><strong class="big">{{ m.guardrailTrips }}</strong></div>
+      </div>
+      <p class="lead">Run the quality evaluation from the CLI: <code>dotnet run --project src/PolicyPilot.Eval -- all</code></p>
+    } @else { <p class="lead">Log in as officer or admin to see operational metrics.</p> }
+  }
+}
+</main>

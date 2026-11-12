@@ -1,0 +1,18 @@
+# docker compose up --build   -> API on :8080 (mock LLM by default)
+# For a local free LLM:  docker compose --profile ollama up   and set Llm__Provider=ollama
+services:
+  api:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      Llm__Provider: ${LLM_PROVIDER:-mock}
+      Llm__BaseUrl: ${LLM_BASE_URL:-http://ollama:11434}
+      Llm__ChatModel: ${LLM_CHAT_MODEL:-llama3.2}
+      Llm__EmbeddingModel: ${LLM_EMBED_MODEL:-nomic-embed-text}
+      Llm__ApiKey: ${LLM_API_KEY:-}
+      Jwt__Secret: ${JWT_SECRET:?set JWT_SECRET (32+ chars)}
+      Cors__Origins__0: http://localhost:4200
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    ports: ["11434:11434"]
