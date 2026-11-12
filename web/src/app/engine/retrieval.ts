@@ -1,4 +1,5 @@
 import { Chunk, indexText, tokens } from './text';
+import { decompose } from './planner';
 
 export interface Scored { chunk: Chunk; score: number; }
 type Allow = (c: Chunk) => boolean;
@@ -77,4 +78,15 @@ export function hybridRetrieve(bm25: Bm25, vectors: VectorIndex, query: string, 
   dense.forEach((r, i) => { const e = fused.get(r.chunk.id); fused.set(r.chunk.id, { chunk: r.chunk, score: (e?.score ?? 0) + 1 / (o.rrf + i + 1) }); });
   const pool = [...fused.values()].sort((a, b) => b.score - a.score).slice(0, o.pool);
   return rerank(query, pool).slice(0, o.k);
+}
+
+/** Multi-topic retrieval: each sub-question is retrieved separately, interleaved round-robin, then topped up with the whole-question ranking. */
+export function hybridRetrieveMulti(bm25: Bm25, vectors: VectorIndex, query: string, role: string, o = { cand: 20, pool: 8, k: 4, rrf: 60 }): Scored[] {
+  const parts = decompose(query); const whole = hybridRetrieve(bm25, vectors, query, role, o);
+  if (parts.length < 2) return whole;
+  const per = parts.map(p => hybridRetrieve(bm25, vectors, p, role, { ...o, k: 2 }));
+  const merged: Scored[] = []; const seen = new Set<string>(); const add = (c: Scored) => { if (!seen.has(c.chunk.id)) { seen.add(c.chunk.id); merged.push(c); } };
+  for (let r = 0; r < 2; r++) per.forEach(l => { if (r < l.length) add(l[r]); });
+  whole.forEach(add);
+  return merged.slice(0, o.k + 2);
 }

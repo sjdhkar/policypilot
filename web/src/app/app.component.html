@@ -1,7 +1,7 @@
 <header>
   <div class="brand"><span class="logo">PP</span><div><h1>PolicyPilot</h1><small>BFSI policy &amp; compliance assistant · fictional documents@if (api.local) { · <b>in-browser demo engine</b> (same pipeline, TypeScript port of the .NET backend)}</small></div></div>
   @if (api.token()) {
-    <div class="who"><span class="pill">{{ api.user() }} · {{ api.role() }}</span><button class="ghost" (click)="api.logout()">Log out</button></div>
+    <div class="who"><span class="pill">{{ api.user() }} · {{ api.role() }}</span><button class="ghost" (click)="logout()">Log out</button></div>
   } @else {
     <form class="login" (ngSubmit)="login()">
       <input name="u" [(ngModel)]="username" placeholder="username" aria-label="username" />
@@ -19,7 +19,7 @@
   <button [class.on]="tab() === 'chat'" (click)="go('chat')">Ask policies</button>
   <button [class.on]="tab() === 'agent'" (click)="go('agent')">Agent (tools)</button>
   <button [class.on]="tab() === 'docs'" (click)="go('docs')">Documents</button>
-  <button [class.on]="tab() === 'metrics'" (click)="go('metrics')">Metrics</button>
+  @if (canSeeMetrics()) { <button [class.on]="tab() === 'metrics'" (click)="go('metrics')">Metrics</button> }
 </nav>
 
 @if (error()) { <div class="err" role="alert">{{ error() }}</div> }
@@ -95,7 +95,7 @@
     </tbody></table>
   }
   @case ('metrics') {
-    @if (metrics(); as m) {
+    @if (canSeeMetrics() && metrics(); as m) {
       <div class="grid">
         <div class="card"><h3>Requests</h3><strong class="big">{{ m.requests }}</strong></div>
         <div class="card"><h3>Answered / Refused</h3><strong class="big">{{ m.answered }} / {{ m.noAnswer }}</strong></div>

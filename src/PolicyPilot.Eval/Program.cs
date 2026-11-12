@@ -30,7 +30,7 @@ static string FindRoot()
     return d?.FullName ?? throw new DirectoryNotFoundException("Could not locate repo root (data/docs)");
 }
 
-record Golden(string Id, string Question, string Role, string? ExpectDoc, string[]? ExpectContains, bool ExpectRefusal, string? ForbidDoc);
+record Golden(string Id, string Question, string Role, string? ExpectDoc, string[]? ExpectContains, bool ExpectRefusal, string? ForbidDoc, string[]? ExpectDocs = null);
 
 static class Evaluation
 {
@@ -65,13 +65,13 @@ static class Evaluation
             else
             {
                 answerable++;
-                var hits = await app.Retriever.RetrieveAsync(g.Question, user, new RetrievalOptions(FinalK: 4));
+                var hits = await app.Retriever.RetrieveMultiAsync(QueryPlanner.Normalise(g.Question), user, new RetrievalOptions(FinalK: 4));
                 int rank = hits.FindIndex(h => h.Chunk.DocId == g.ExpectDoc) + 1;
                 if (rank == 1) hit1++;
                 if (rank > 0) { hitK++; mrr += 1.0 / rank; }
                 bool hasText = g.ExpectContains?.All(s => ans.Answer.Contains(s, StringComparison.OrdinalIgnoreCase)) ?? true;
                 if (hasText && ans.Answered) contains++;
-                bool citeOk = ans.Citations.Any(c => c.DocId == g.ExpectDoc);
+                bool citeOk = (g.ExpectDocs ?? [g.ExpectDoc!]).All(d => ans.Citations.Any(c => c.DocId == d));
                 if (citeOk) cited++;
                 verdict = (rank > 0 && hasText && ans.Answered && citeOk) ? "PASS" : $"FAIL (rank={rank}, text={hasText}, cite={citeOk})";
             }
@@ -104,7 +104,7 @@ static class Tests
     public static async Task<int> RunAll(string docs)
     {
         Console.WriteLine("=== UNIT TESTS ===");
-        Analyzer(); Chunking(); Bm25(); Pii(); Injection(); Output(); Emi(); Jwt(); Passwords(); RateLimit();
+        Analyzer(); Planner(); Chunking(); Bm25(); Pii(); Injection(); Output(); Emi(); Jwt(); Passwords(); RateLimit();
         await KnowledgeBaseTests(docs); await Acl(docs); await AgentTests(docs); await PipelineTests(docs);
         Console.WriteLine($"{pass} passed, {fail} failed");
         return fail == 0 ? 0 : 1;
@@ -114,6 +114,14 @@ static class Tests
     {
         Check("tokens lowercase", TextAnalyzer.Tokens("Home LOAN Fees").SequenceEqual(TextAnalyzer.Tokens("home loan fees")));
         Check("stopwords removed", !TextAnalyzer.Tokens("what is the fee").Contains("the"));
+    }
+
+    static void Planner()
+    {
+        Check("cibil -> credit score", QueryPlanner.Normalise("what is the CIBIL score needed").Contains("credit score", StringComparison.OrdinalIgnoreCase));
+        Check("split compound", QueryPlanner.Decompose("cibil and loan tenure").Count == 2);
+        Check("split comma", QueryPlanner.Decompose("processing fee, prepayment charges and tenure").Count == 3);
+        Check("single stays single", QueryPlanner.Decompose("What is the maximum tenure for a home loan?").Count == 1);
     }
 
     static void Chunking()
@@ -262,6 +270,10 @@ static class Tests
         Check("pii flagged", pii.Flags.Any(f => f.StartsWith("pii_redacted")));
         var poison = await app.Rag.AnswerAsync("What are the branch working hours?", cust);
         Check("indirect injection not obeyed", !poison.Answer.Contains("system prompt", StringComparison.OrdinalIgnoreCase), poison.Answer);
+        var multi = await app.Rag.AnswerAsync("What is the CIBIL score requirement and the maximum loan tenure?", cust);
+        Check("multi-topic answers both", multi.Answer.Contains("700") && multi.Answer.Contains("30 years"), multi.Answer);
+        var part = await app.Rag.AnswerAsync("What is the FOIR limit and what is the loan tenure?", cust);
+        Check("partial answer states the gap", part.Answer.Contains("30 years") && part.Answer.Contains("could not find") && part.Flags.Contains("partial_answer"), part.Answer);
         var hist = new List<ChatTurn> { new("user", "What is the processing fee for a home loan?"), new("assistant", "0.50 percent") };
         var f = await app.Rag.AnswerAsync("what is the minimum for it", cust, hist);
         Check("follow-up contextualised", f.Answered, f.Answer);

@@ -40,10 +40,9 @@ public sealed partial class MockLlm : ILlmClient
     {
         var user = r.Messages.Last().Content;
         var q = Regex.Match(user, @"QUESTION:\s*(.*?)\s*ANSWER", RegexOptions.Singleline).Groups[1].Value;
-        var qt = TextAnalyzer.Tokens(q).Distinct().ToList();
         var ctxBlock = Regex.Match(user, @"CONTEXT:\s*(.*?)\s*QUESTION:", RegexOptions.Singleline).Groups[1].Value;
 
-        var cand = new List<(int idx, string sentence, double score)>();
+        var cand = new List<(int idx, string sentence, HashSet<string> set)>();
         foreach (var line in ctxBlock.Split('\n'))
         {
             var m = CtxLine().Match(line.Trim());
@@ -54,13 +53,25 @@ public sealed partial class MockLlm : ILlmClient
                 var st = TextAnalyzer.Tokens(s);
                 if (st.Count < 3) continue;
                 var set = st.ToHashSet(); set.UnionWith(TextAnalyzer.Tokens(m.Groups[2].Value.Split('>').Last()));
-                double score = qt.Count(set.Contains) / (double)Math.Max(1, qt.Count);
-                cand.Add((idx, s.Trim(), score));
+                cand.Add((idx, s.Trim(), set));
             }
         }
-        var best = cand.Where(c => c.score >= 0.2).OrderByDescending(c => c.score).ThenBy(c => c.idx).Take(3).ToList();
-        if (best.Count == 0) return "I could not find this in the policy documents.";
-        return string.Join(" ", best.OrderBy(b => b.idx).Select(b => $"{b.sentence.TrimEnd()} [{b.idx}]"));
+
+        // Compound question: pick the best sentences for EACH sub-question so every topic is answered.
+        var parts = QueryPlanner.Decompose(q);
+        var picked = new List<(int idx, string sentence)>();
+        foreach (var part in parts)
+        {
+            var qt = TextAnalyzer.Tokens(part).Distinct().ToList();
+            if (qt.Count == 0) continue;
+            var scored = cand.Select(c => (c.idx, c.sentence, score: qt.Count(c.set.Contains) / (double)qt.Count))
+                .Where(c => c.score >= 0.2).OrderByDescending(c => c.score).ThenBy(c => c.idx).ToList();
+            // for compound questions keep a second sentence only if it is nearly as relevant as the first
+            var best = parts.Count > 1 ? scored.Where(c => c.score >= 0.75 * scored[0].score).Take(2) : scored.Take(3);
+            foreach (var b in best) if (!picked.Contains((b.idx, b.sentence))) picked.Add((b.idx, b.sentence));
+        }
+        if (picked.Count == 0) return "I could not find this in the policy documents.";
+        return string.Join(" ", picked.OrderBy(p => p.idx).Select(p => $"{p.sentence.TrimEnd()} [{p.idx}]"));
     }
 
     private static string Plan(LlmRequest r)

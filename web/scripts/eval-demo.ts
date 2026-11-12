@@ -2,7 +2,8 @@
 import * as fs from 'fs'; import * as path from 'path';
 import { KnowledgeBase, answerQuestion, runAgent } from '../src/app/engine/pipeline';
 import { parseFrontMatter } from '../src/app/engine/text';
-import { hybridRetrieve } from '../src/app/engine/retrieval';
+import { hybridRetrieveMulti } from '../src/app/engine/retrieval';
+import { normalise } from '../src/app/engine/planner';
 
 const root = path.join(__dirname, '..', '..');
 const kb = new KnowledgeBase();
@@ -15,10 +16,10 @@ for (const g of golden) {
   const user = { userId: 'eval', role: g.role }; const a = answerQuestion(kb, g.question, user); let ok: boolean;
   if (g.expectRefusal) { refCases++; ok = !a.answered; if (ok) refOk++; if (g.forbidDoc) { aclCases++; if (ok && !a.citations.some(c => c.docId === g.forbidDoc)) aclOk++; } }
   else {
-    answerable++; const hits = hybridRetrieve(kb.bm25, kb.vectors, g.question, g.role); const rank = hits.findIndex(h => h.chunk.docId === g.expectDoc) + 1;
+    answerable++; const hits = hybridRetrieveMulti(kb.bm25, kb.vectors, normalise(g.question), g.role); const rank = hits.findIndex(h => h.chunk.docId === g.expectDoc) + 1;
     if (rank === 1) hit1++; if (rank > 0) hitK++;
     const text = (g.expectContains ?? []).every((s: string) => a.answer.toLowerCase().includes(s.toLowerCase())); if (text && a.answered) cont++;
-    const cite = a.citations.some(c => c.docId === g.expectDoc); if (cite) cited++;
+    const cite = (g.expectDocs ?? [g.expectDoc]).every((d: string) => a.citations.some(c => c.docId === d)); if (cite) cited++;
     ok = rank > 0 && text && a.answered && cite;
   }
   if (!ok) { fail++; console.log('FAIL', g.id, g.question, '->', a.answer.slice(0, 80), a.flags); }

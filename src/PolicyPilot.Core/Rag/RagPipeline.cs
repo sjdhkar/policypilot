@@ -40,14 +40,43 @@ public sealed class RagPipeline(KnowledgeBase kb, HybridRetriever retriever, ILl
         }
         var (safeQuestion, pii) = PiiRedactor.Redact(question);
         if (pii.Count > 0) { flags.Add("pii_redacted:" + string.Join(",", pii)); telemetry.GuardrailTrips.Add(1, new KeyValuePair<string, object?>("type", "pii")); }
+        safeQuestion = QueryPlanner.Normalise(safeQuestion);
         Lap("input_guardrails");
 
         // 2) Contextualise follow-ups ("what about prepayment?") using the last user turn
         var searchQuery = Contextualise(safeQuestion, history);
         Lap("contextualise");
 
+        // 2b) Gate helper: is this (sub-)question about something the user's visible documents cannot answer?
+        Func<Chunk, bool> visible = c => c.AllowedRoles.Contains(user.Role, StringComparer.OrdinalIgnoreCase);
+        bool Blocked(string text)
+        {
+            var qt = TextAnalyzer.Tokens(text).Distinct().ToList();
+            double unk = qt.Count == 0 ? 1 : qt.Count(t => !kb.Bm25.Contains(t, visible)) / (double)qt.Count;
+            // An unknown ACRONYM (FOIR, LTV, NPA...) is the subject of the question, so answering from neighbouring text would be wrong.
+            bool acr = System.Text.RegularExpressions.Regex.Matches(text, @"\b[A-Z]{3,6}\b")
+                .Any(m => TextAnalyzer.Tokens(m.Value) is { Count: > 0 } t && !kb.Bm25.Contains(t[0], visible));
+            // A term that exists in the corpus but ONLY in documents this user cannot see marks a restricted topic (e.g. "fraud desk" for a customer).
+            bool restr = qt.Any(t => !kb.Bm25.Contains(t, visible) && kb.Bm25.Contains(t, _ => true));
+            return unk >= _o.MaxUnknownTermRatio || acr || restr;
+        }
+
+        // Compound question where only SOME parts are answerable: answer those and say plainly what could not be found.
+        var unanswered = new List<string>();
+        var allParts = QueryPlanner.Decompose(searchQuery);
+        if (allParts.Count > 1)
+        {
+            var ok = allParts.Where(p => !Blocked(p)).ToList();
+            if (ok.Count > 0 && ok.Count < allParts.Count)
+            {
+                unanswered = allParts.Except(ok).ToList();
+                searchQuery = string.Join(" and ", ok); safeQuestion = searchQuery;
+                flags.Add("partial_answer");
+            }
+        }
+
         // 3) Retrieve (ACL applied inside)
-        var hits = await retriever.RetrieveAsync(searchQuery, user, _o.Retrieval, ct);
+        var hits = await retriever.RetrieveMultiAsync(searchQuery, user, _o.Retrieval, ct);
         Lap("retrieve");
 
         // 4) Indirect prompt injection: strip only the offending lines from retrieved chunks (keep the legitimate text)
@@ -64,22 +93,17 @@ public sealed class RagPipeline(KnowledgeBase kb, HybridRetriever retriever, ILl
         // 5) Confidence gate: (a) the best chunk must cover enough query terms, and
         //    (b) query terms that do not exist anywhere in documents THIS user may see signal an unanswerable question
         //    (this also stops a customer getting a wrong answer about an officer-only topic).
-        var qTerms = TextAnalyzer.Tokens(searchQuery).Distinct().ToList();
-        Func<Chunk, bool> visible = c => c.AllowedRoles.Contains(user.Role, StringComparer.OrdinalIgnoreCase);
-        double unknown = qTerms.Count == 0 ? 1 : qTerms.Count(t => !kb.Bm25.Contains(t, visible)) / (double)qTerms.Count;
-        // An unknown ACRONYM (FOIR, LTV, NPA...) is the subject of the question, so answering from neighbouring text would be wrong.
-        bool unknownAcronym = System.Text.RegularExpressions.Regex.Matches(safeQuestion, @"\b[A-Z]{3,6}\b")
-            .Any(m => TextAnalyzer.Tokens(m.Value) is { Count: > 0 } t && !kb.Bm25.Contains(t[0], visible));
-        // A term that exists in the corpus but ONLY in documents this user cannot see marks a restricted topic (e.g. "fraud desk" for a customer).
-        bool restricted = qTerms.Any(t => !kb.Bm25.Contains(t, visible) && kb.Bm25.Contains(t, _ => true));
-        bool unknownGate = unknown >= _o.MaxUnknownTermRatio || unknownAcronym || restricted;
-        double coverage = clean.Count == 0 ? 0 : Coverage(searchQuery, clean[0].Chunk.IndexText);
+        bool unknownGate = Blocked(searchQuery);
+        var parts = QueryPlanner.Decompose(searchQuery);
+        double coverage = clean.Count == 0 ? 0
+            : parts.Count < 2 ? Coverage(searchQuery, clean[0].Chunk.IndexText)
+            : parts.Average(p => clean.Max(c => Coverage(p, c.Chunk.IndexText)));   // every sub-question needs a supporting chunk
         double confidence = clean.Count == 0 ? 0 : Math.Round(Math.Min(1, 0.6 * coverage + 0.4 * clean[0].Score), 3);
         if (clean.Count == 0 || coverage < _o.MinTopCoverage || unknownGate)
         {
             telemetry.NoAnswer.Add(1);
             Lap("confidence_gate");
-            return new RagAnswer(NoAnswer, [], confidence, false, flags.Append(unknownGate ? $"unknown_terms:ratio={unknown:0.00},acr={unknownAcronym},restricted={string.Join("/", qTerms.Where(t => !kb.Bm25.Contains(t, visible) && kb.Bm25.Contains(t, _ => true)))}" : "low_retrieval_confidence").ToList(), timings);
+            return new RagAnswer(NoAnswer, [], confidence, false, flags.Append(unknownGate ? "unknown_terms" : "low_retrieval_confidence").ToList(), timings);
         }
         Lap("confidence_gate");
 
@@ -105,6 +129,8 @@ public sealed class RagPipeline(KnowledgeBase kb, HybridRetriever retriever, ILl
 
         var citations = clean.Select((c, i) => new Citation(i + 1, c.Chunk.DocId, c.Chunk.DocTitle, c.Chunk.Section, Snip(c.Chunk.Text), Math.Round(c.Score, 3))).ToList();
         telemetry.Answered.Add(1);
+        if (unanswered.Count > 0 && !refused)
+            answer = answer.Trim() + " Note: I could not find information about \"" + string.Join("\" and \"", unanswered) + "\" in the policy documents I can access.";
         return new RagAnswer(answer.Trim(), citations, confidence, !refused, flags, timings);
     }
 

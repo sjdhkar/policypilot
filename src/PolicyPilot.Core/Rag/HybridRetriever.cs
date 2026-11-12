@@ -35,4 +35,26 @@ public sealed class HybridRetriever(Bm25Index bm25, VectorIndex vectors, IEmbedd
 
         return Reranker.Rerank(query, pool).Take(opt.FinalK).ToList();
     }
+
+    /// <summary>
+    /// Multi-topic retrieval: each sub-question is retrieved on its own (so every topic gets representation), then results are
+    /// interleaved round-robin and topped up with the whole-question ranking. Falls back to plain retrieval for single-topic questions.
+    /// </summary>
+    public async Task<List<ScoredChunk>> RetrieveMultiAsync(string query, UserContext user, RetrievalOptions? opt = null, CancellationToken ct = default)
+    {
+        opt ??= new RetrievalOptions();
+        var parts = QueryPlanner.Decompose(query);
+        var whole = await RetrieveAsync(query, user, opt, ct);
+        if (parts.Count < 2) return whole;
+
+        var perPart = new List<List<ScoredChunk>>();
+        foreach (var p in parts) perPart.Add(await RetrieveAsync(p, user, opt with { FinalK = 2 }, ct));
+
+        var merged = new List<ScoredChunk>(); var seen = new HashSet<string>();
+        void Add(ScoredChunk c) { if (seen.Add(c.Chunk.Id)) merged.Add(c); }
+        for (int rank = 0; rank < 2; rank++)
+            foreach (var list in perPart) if (rank < list.Count) Add(list[rank]);
+        foreach (var c in whole) Add(c);
+        return merged.Take(opt.FinalK + 2).ToList();
+    }
 }

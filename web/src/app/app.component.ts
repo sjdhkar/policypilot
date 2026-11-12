@@ -27,9 +27,13 @@ export class AppComponent {
 
   constructor(public api: ApiService) {}
 
+  canSeeMetrics() { return this.api.role() === 'officer' || this.api.role() === 'admin'; }
+  /** Clears everything that depends on who is logged in, so one role never sees another role's data. */
+  private reset() { this.turns.set([]); this.docs.set([]); this.metrics.set(null); this.agentRes.set(null); this.error.set(''); this.tab.set('chat'); }
+  logout() { this.api.logout(); this.reset(); }
   async login() {
     this.error.set('');
-    try { await this.api.login(this.username, this.password); this.turns.set([]); } catch { this.error.set('Invalid username or password'); }
+    try { await this.api.login(this.username, this.password); this.reset(); } catch { this.error.set('Invalid username or password'); }
   }
   pick(u: string, p: string) { this.username = u; this.password = p; }
 
@@ -60,7 +64,7 @@ export class AppComponent {
     this.tab.set(tab); this.error.set('');
     try {
       if (tab === 'docs') this.docs.set(await this.api.documents());
-      if (tab === 'metrics') this.metrics.set(await this.api.metrics());
+      if (tab === 'metrics') { this.metrics.set(null); if (!this.canSeeMetrics()) throw new Error('forbidden'); this.metrics.set(await this.api.metrics()); }
     } catch { this.error.set(tab === 'metrics' ? 'Metrics need an officer or admin login' : 'Could not load'); }
   }
   async upload(ev: Event) {

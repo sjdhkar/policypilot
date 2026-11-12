@@ -1,6 +1,7 @@
 import { Chunk, DocumentMeta, chunkDocument, indexText, parseFrontMatter, tokens } from './text';
 import { checkOutput, injectionDetected, redactPii } from './guardrails';
-import { Bm25, Scored, VectorIndex, embed, hybridRetrieve } from './retrieval';
+import { Bm25, Scored, VectorIndex, embed, hybridRetrieve, hybridRetrieveMulti } from './retrieval';
+import { decompose, normalise } from './planner';
 
 export interface Citation { index: number; docId: string; docTitle: string; section: string; snippet: string; score: number; }
 export interface RagAnswer { answer: string; citations: Citation[]; confidence: number; answered: boolean; flags: string[]; timings: { stage: string; ms: number }[]; }
@@ -30,18 +31,21 @@ export class KnowledgeBase {
 
 // ---------- Mock (extractive) LLM: same behaviour as the .NET MockLlm ----------
 function extractAnswer(question: string, ctx: { idx: number; section: string; text: string }[]): string {
-  const qt = [...new Set(tokens(question))];
-  const cand: { idx: number; s: string; score: number }[] = [];
-  for (const c of ctx) {
-    for (const s of c.text.split(/(?<=[.!?])\s+/)) {
-      const st = tokens(s); if (st.length < 3) continue;
-      const set = new Set([...st, ...tokens(c.section)]);
-      cand.push({ idx: c.idx, s: s.trim(), score: qt.filter(t => set.has(t)).length / Math.max(1, qt.length) });
-    }
+  const cand: { idx: number; s: string; set: Set<string> }[] = [];
+  for (const c of ctx) for (const s of c.text.split(/(?<=[.!?])\s+/)) {
+    const st = tokens(s); if (st.length < 3) continue;
+    cand.push({ idx: c.idx, s: s.trim(), set: new Set([...st, ...tokens(c.section)]) });
   }
-  const best = cand.filter(c => c.score >= 0.2).sort((a, b) => b.score - a.score || a.idx - b.idx).slice(0, 3);
-  if (!best.length) return 'I could not find this in the policy documents.';
-  return best.sort((a, b) => a.idx - b.idx).map(b => `${b.s.replace(/\s+$/, '')} [${b.idx}]`).join(' ');
+  const parts = decompose(question); const picked: { idx: number; s: string }[] = [];
+  for (const part of parts) {
+    const qt = [...new Set(tokens(part))]; if (!qt.length) continue;
+    const scored = cand.map(c => ({ idx: c.idx, s: c.s, score: qt.filter(t => c.set.has(t)).length / qt.length })).filter(c => c.score >= 0.2)
+      .sort((a, b) => b.score - a.score || a.idx - b.idx);
+    const best = parts.length > 1 ? scored.filter(c => c.score >= 0.75 * scored[0].score).slice(0, 2) : scored.slice(0, 3);
+    for (const b of best) if (!picked.some(p => p.idx === b.idx && p.s === b.s)) picked.push({ idx: b.idx, s: b.s });
+  }
+  if (!picked.length) return 'I could not find this in the policy documents.';
+  return picked.sort((a, b) => a.idx - b.idx).map(p => `${p.s.replace(/\s+$/, '')} [${p.idx}]`).join(' ');
 }
 
 export interface RagMetrics { requests: number; answered: number; noAnswer: number; guardrailTrips: number; promptTokens: number; completionTokens: number; latencies: number[]; }
@@ -60,10 +64,23 @@ export function answerQuestion(kb: KnowledgeBase, question: string, user: User, 
   const done = (a: RagAnswer) => { if (m) { m.requests++; a.answered ? m.answered++ : m.noAnswer++; m.latencies.push(performance.now() - t0); } return a; };
 
   if (injectionDetected(question)) { if (m) m.guardrailTrips++; return done({ answer: "I can't help with that request. Please ask a question about the bank's policies.", citations: [], confidence: 0, answered: false, flags: ['prompt_injection_blocked'], timings }); }
-  const { text: safe, found } = redactPii(question); if (found.length) { flags.push('pii_redacted:' + found.join(',')); if (m) m.guardrailTrips++; }
+  let { text: safe, found } = redactPii(question); safe = normalise(safe); if (found.length) { flags.push('pii_redacted:' + found.join(',')); if (m) m.guardrailTrips++; }
   mark('input_guardrails');
-  const query = contextualise(safe, history); mark('contextualise');
-  const hits = hybridRetrieve(kb.bm25, kb.vectors, query, user.role); mark('retrieve');
+  let query = contextualise(safe, history); mark('contextualise');
+  const visible = (c: Chunk) => c.allowedRoles.some(r => r.toLowerCase() === user.role.toLowerCase());
+  const blocked = (text: string) => {
+    const qt = [...new Set(tokens(text))];
+    const unk = qt.length ? qt.filter(t => !kb.bm25.contains(t, visible)).length / qt.length : 1;
+    const acr = [...text.matchAll(/\b[A-Z]{3,6}\b/g)].some(mm => { const t = tokens(mm[0]); return t.length > 0 && !kb.bm25.contains(t[0], visible); });
+    const restr = qt.some(t => !kb.bm25.contains(t, visible) && kb.bm25.contains(t, () => true));
+    return unk >= 0.5 || acr || restr;
+  };
+  let unanswered: string[] = []; const allParts = decompose(query);
+  if (allParts.length > 1) {
+    const ok = allParts.filter(p => !blocked(p));
+    if (ok.length > 0 && ok.length < allParts.length) { unanswered = allParts.filter(p => !ok.includes(p)); query = ok.join(' and '); safe = query; flags.push('partial_answer'); }
+  }
+  const hits = hybridRetrieveMulti(kb.bm25, kb.vectors, query, user.role); mark('retrieve');
 
   const clean: Scored[] = [];
   for (const h of hits) {
@@ -72,13 +89,9 @@ export function answerQuestion(kb: KnowledgeBase, question: string, user: User, 
     const kept = h.chunk.text.split(/(?<=[.!?])\s+|\n/).filter(l => !injectionDetected(l)).join(' ').trim();
     if (kept) clean.push({ ...h, chunk: { ...h.chunk, text: kept } });
   }
-  const visible = (c: Chunk) => c.allowedRoles.some(r => r.toLowerCase() === user.role.toLowerCase());
-  const qTerms = [...new Set(tokens(query))];
-  const unknown = qTerms.length ? qTerms.filter(t => !kb.bm25.contains(t, visible)).length / qTerms.length : 1;
-  const unknownAcr = [...safe.matchAll(/\b[A-Z]{3,6}\b/g)].some(mm => { const t = tokens(mm[0]); return t.length > 0 && !kb.bm25.contains(t[0], visible); });
-  const restricted = qTerms.some(t => !kb.bm25.contains(t, visible) && kb.bm25.contains(t, () => true));
-  const gate = unknown >= 0.5 || unknownAcr || restricted;
-  const cov = clean.length ? coverage(query, indexText(clean[0].chunk)) : 0;
+  const gate = blocked(query);
+  const parts = decompose(query);
+  const cov = !clean.length ? 0 : parts.length < 2 ? coverage(query, indexText(clean[0].chunk)) : parts.reduce((a, p) => a + Math.max(...clean.map(c => coverage(p, indexText(c.chunk)))), 0) / parts.length;
   const confidence = clean.length ? Math.round(Math.min(1, 0.6 * cov + 0.4 * clean[0].score) * 1000) / 1000 : 0;
   if (!clean.length || cov < 0.34 || gate) { mark('confidence_gate'); return done({ answer: NO_ANSWER, citations: [], confidence, answered: false, flags: [...flags, gate ? 'unknown_terms' : 'low_retrieval_confidence'], timings }); }
   mark('confidence_gate');
@@ -92,6 +105,7 @@ export function answerQuestion(kb: KnowledgeBase, question: string, user: User, 
   if (!refused && chk.groundedRatio < 0.6) { flags.push(`low_groundedness:${chk.groundedRatio.toFixed(2)}`); mark('output_guardrails'); return done({ answer: NO_ANSWER, citations: [], confidence, answered: false, flags, timings }); }
   mark('output_guardrails');
   const citations = clean.map((c, i) => ({ index: i + 1, docId: c.chunk.docId, docTitle: c.chunk.docTitle, section: c.chunk.section, snippet: c.chunk.text.length <= 220 ? c.chunk.text : c.chunk.text.slice(0, 220) + '…', score: Math.round(c.score * 1000) / 1000 }));
+  if (unanswered.length && !refused) answer = answer.trim() + ` Note: I could not find information about "${unanswered.join('" and "')}" in the policy documents I can access.`;
   return done({ answer: answer.trim(), citations, confidence, answered: !refused, flags, timings });
 }
 
