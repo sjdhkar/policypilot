@@ -228,5 +228,59 @@
    "30 years",
    "could not find"
   ]
+ },
+ {
+  "id": "c1",
+  "question": "my card doent work want to discontinue that card",
+  "role": "customer",
+  "expectDoc": "card-disputes",
+  "expectContains": [
+   "blocked"
+  ]
+ },
+ {
+  "id": "c2",
+  "question": "someone used my card without my permission what should i do",
+  "role": "customer",
+  "expectDoc": "card-disputes",
+  "expectContains": [
+   "3 working days"
+  ]
+ },
+ {
+  "id": "c3",
+  "question": "i lost my card",
+  "role": "customer",
+  "expectDoc": "card-disputes",
+  "expectContains": [
+   "blocked immediately"
+  ]
+ },
+ {
+  "id": "c4",
+  "question": "whats the maximun tenure for a home loan",
+  "role": "customer",
+  "expectDoc": "home-loan-faq",
+  "expectContains": [
+   "30 years"
+  ]
+ },
+ {
+  "id": "c5",
+  "question": "i want to pay my loan early is there any penalty",
+  "role": "customer",
+  "expectDoc": "prepayment-foreclosure",
+  "expectContains": [
+   "No prepayment"
+  ]
+ },
+ {
+  "id": "c6",
+  "question": "I am not happy with the service where can i escalate",
+  "role": "customer",
+  "expectDoc": "grievance-redressal",
+  "expectContains": [
+   "Level"
+  ]
  }
 ]

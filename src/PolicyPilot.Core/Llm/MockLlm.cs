@@ -67,7 +67,7 @@ public sealed partial class MockLlm : ILlmClient
             var scored = cand.Select(c => (c.idx, c.sentence, score: qt.Count(c.set.Contains) / (double)qt.Count))
                 .Where(c => c.score >= 0.2).OrderByDescending(c => c.score).ThenBy(c => c.idx).ToList();
             // for compound questions keep a second sentence only if it is nearly as relevant as the first
-            var best = parts.Count > 1 ? scored.Where(c => c.score >= 0.75 * scored[0].score).Take(2) : scored.Take(3);
+            var best = parts.Count > 1 ? scored.Where(c => c.score >= 0.75 * scored[0].score).Take(2) : scored.Where(c => c.score >= 0.5 * scored[0].score).Take(3);
             foreach (var b in best) if (!picked.Contains((b.idx, b.sentence))) picked.Add((b.idx, b.sentence));
         }
         if (picked.Count == 0) return "I could not find this in the policy documents.";

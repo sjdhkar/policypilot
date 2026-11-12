@@ -40,7 +40,7 @@ public sealed class RagPipeline(KnowledgeBase kb, HybridRetriever retriever, ILl
         }
         var (safeQuestion, pii) = PiiRedactor.Redact(question);
         if (pii.Count > 0) { flags.Add("pii_redacted:" + string.Join(",", pii)); telemetry.GuardrailTrips.Add(1, new KeyValuePair<string, object?>("type", "pii")); }
-        safeQuestion = QueryPlanner.Normalise(safeQuestion);
+        safeQuestion = QueryPlanner.Correct(QueryPlanner.Normalise(safeQuestion), kb.VocabularyFor(user.Role));
         Lap("input_guardrails");
 
         // 2) Contextualise follow-ups ("what about prepayment?") using the last user turn
@@ -139,7 +139,9 @@ public sealed class RagPipeline(KnowledgeBase kb, HybridRetriever retriever, ILl
         var prev = history.LastOrDefault(h => h.Role == "user")?.Content;
         if (prev is null) return question;
         var toks = TextAnalyzer.Tokens(question);
-        bool followUp = toks.Count <= 3 || System.Text.RegularExpressions.Regex.IsMatch(question, @"\b(it|that|this|those|they|them|its|same)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        // Only borrow the previous question when this one cannot stand alone (very short, or a pronoun plus almost no content words).
+        bool pronoun = System.Text.RegularExpressions.Regex.IsMatch(question, @"\b(it|that|this|those|they|them|its|same)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        bool followUp = toks.Count <= 3 || (pronoun && toks.Count <= 4);
         return followUp ? $"{prev} {question}" : question;
     }
 

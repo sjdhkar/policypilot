@@ -1,7 +1,7 @@
 import { Chunk, DocumentMeta, chunkDocument, indexText, parseFrontMatter, tokens } from './text';
 import { checkOutput, injectionDetected, redactPii } from './guardrails';
 import { Bm25, Scored, VectorIndex, embed, hybridRetrieve, hybridRetrieveMulti } from './retrieval';
-import { decompose, normalise } from './planner';
+import { correct, decompose, normalise } from './planner';
 
 export interface Citation { index: number; docId: string; docTitle: string; section: string; snippet: string; score: number; }
 export interface RagAnswer { answer: string; citations: Citation[]; confidence: number; answered: boolean; flags: string[]; timings: { stage: string; ms: number }[]; }
@@ -23,6 +23,11 @@ export class KnowledgeBase {
     for (const [k, c] of this.chunks) if (c.docId === id) this.chunks.delete(k);
     if (rebuild && had) this.rebuild(); return had;
   }
+  vocabularyFor(role: string): Set<string> {
+    const v = new Set<string>();
+    for (const c of this.chunks.values()) if (c.allowedRoles.some(r => r.toLowerCase() === role.toLowerCase())) for (const m of indexText(c).toLowerCase().matchAll(/[a-z]{4,}/g)) v.add(m[0]);
+    return v;
+  }
   private rebuild() {
     const all = [...this.chunks.values()]; this.bm25.build(all); this.vectors.clear();
     for (const c of all) this.vectors.add(c, embed(indexText(c)));
@@ -41,7 +46,7 @@ function extractAnswer(question: string, ctx: { idx: number; section: string; te
     const qt = [...new Set(tokens(part))]; if (!qt.length) continue;
     const scored = cand.map(c => ({ idx: c.idx, s: c.s, score: qt.filter(t => c.set.has(t)).length / qt.length })).filter(c => c.score >= 0.2)
       .sort((a, b) => b.score - a.score || a.idx - b.idx);
-    const best = parts.length > 1 ? scored.filter(c => c.score >= 0.75 * scored[0].score).slice(0, 2) : scored.slice(0, 3);
+    const best = parts.length > 1 ? scored.filter(c => c.score >= 0.75 * scored[0].score).slice(0, 2) : scored.filter(c => c.score >= 0.5 * scored[0].score).slice(0, 3);
     for (const b of best) if (!picked.some(p => p.idx === b.idx && p.s === b.s)) picked.push({ idx: b.idx, s: b.s });
   }
   if (!picked.length) return 'I could not find this in the policy documents.';
@@ -53,7 +58,7 @@ export const newMetrics = (): RagMetrics => ({ requests: 0, answered: 0, noAnswe
 
 const contextualise = (q: string, history: { role: string; content: string }[]) => {
   const prev = [...history].reverse().find(h => h.role === 'user')?.content; if (!prev) return q;
-  const follow = tokens(q).length <= 3 || /\b(it|that|this|those|they|them|its|same)\b/i.test(q);
+  const n = tokens(q).length; const follow = n <= 3 || (/\b(it|that|this|those|they|them|its|same)\b/i.test(q) && n <= 4);
   return follow ? `${prev} ${q}` : q;
 };
 const coverage = (q: string, text: string) => { const qs = [...new Set(tokens(q))]; if (!qs.length) return 0; const set = new Set(tokens(text)); return qs.filter(t => set.has(t)).length / qs.length; };
@@ -64,7 +69,7 @@ export function answerQuestion(kb: KnowledgeBase, question: string, user: User, 
   const done = (a: RagAnswer) => { if (m) { m.requests++; a.answered ? m.answered++ : m.noAnswer++; m.latencies.push(performance.now() - t0); } return a; };
 
   if (injectionDetected(question)) { if (m) m.guardrailTrips++; return done({ answer: "I can't help with that request. Please ask a question about the bank's policies.", citations: [], confidence: 0, answered: false, flags: ['prompt_injection_blocked'], timings }); }
-  let { text: safe, found } = redactPii(question); safe = normalise(safe); if (found.length) { flags.push('pii_redacted:' + found.join(',')); if (m) m.guardrailTrips++; }
+  let { text: safe, found } = redactPii(question); safe = correct(normalise(safe), kb.vocabularyFor(user.role)); if (found.length) { flags.push('pii_redacted:' + found.join(',')); if (m) m.guardrailTrips++; }
   mark('input_guardrails');
   let query = contextualise(safe, history); mark('contextualise');
   const visible = (c: Chunk) => c.allowedRoles.some(r => r.toLowerCase() === user.role.toLowerCase());

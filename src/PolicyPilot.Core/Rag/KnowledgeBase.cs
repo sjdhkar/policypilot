@@ -14,6 +14,15 @@ public sealed class KnowledgeBase(IEmbeddingClient embedder, Chunker chunker)
     public VectorIndex Vectors { get; } = new();
     public IEmbeddingClient Embedder => embedder;
 
+    /// <summary>Lower-case words (4+ letters) from the chunks a role may read; used for typo correction.</summary>
+    public IReadOnlyCollection<string> VocabularyFor(string role)
+    {
+        lock (_gate)
+            return _items.Values.Where(i => i.chunk.AllowedRoles.Contains(role, StringComparer.OrdinalIgnoreCase))
+                .SelectMany(i => System.Text.RegularExpressions.Regex.Matches(i.chunk.IndexText.ToLowerInvariant(), "[a-z]{4,}").Select(m => m.Value))
+                .ToHashSet();
+    }
+
     public IReadOnlyList<DocumentMeta> Documents { get { lock (_gate) return _docs.Values.OrderBy(d => d.Title).ToList(); } }
     public int ChunkCount { get { lock (_gate) return _items.Count; } }
     public IReadOnlyList<Chunk> Chunks { get { lock (_gate) return _items.Values.Select(i => i.chunk).OrderBy(c => c.Id).ToList(); } }

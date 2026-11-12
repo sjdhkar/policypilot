@@ -118,6 +118,8 @@ static class Tests
 
     static void Planner()
     {
+        Check("typo corrected", QueryPlanner.Correct("maximun tenure", new[] { "maximum", "tenure" }) == "maximum tenure");
+        Check("acronym untouched", QueryPlanner.Correct("FOIR limit", new[] { "form" }) == "FOIR limit");
         Check("cibil -> credit score", QueryPlanner.Normalise("what is the CIBIL score needed").Contains("credit score", StringComparison.OrdinalIgnoreCase));
         Check("split compound", QueryPlanner.Decompose("cibil and loan tenure").Count == 2);
         Check("split comma", QueryPlanner.Decompose("processing fee, prepayment charges and tenure").Count == 3);
@@ -274,6 +276,9 @@ static class Tests
         Check("multi-topic answers both", multi.Answer.Contains("700") && multi.Answer.Contains("30 years"), multi.Answer);
         var part = await app.Rag.AnswerAsync("What is the FOIR limit and what is the loan tenure?", cust);
         Check("partial answer states the gap", part.Answer.Contains("30 years") && part.Answer.Contains("could not find") && part.Flags.Contains("partial_answer"), part.Answer);
+        var convo = new List<ChatTurn> { new("user", "How soon must I report an unauthorised card transaction?"), new("assistant", "Within 3 working days. [1]") };
+        var card = await app.Rag.AnswerAsync("my card doent work want to discontinue that card", cust, convo);
+        Check("conversational card question -> blocking/replacement, not the previous answer", card.Answered && card.Answer.Contains("blocked") && card.Answer.Contains("replacement") && !card.Answer.Contains("10,000"), card.Answer);
         var hist = new List<ChatTurn> { new("user", "What is the processing fee for a home loan?"), new("assistant", "0.50 percent") };
         var f = await app.Rag.AnswerAsync("what is the minimum for it", cust, hist);
         Check("follow-up contextualised", f.Answered, f.Answer);
